@@ -35,7 +35,7 @@ let AsyncErrorFallback (input: obj) =
     let args = [| input |]
     let asyncFuncImpl = 
         fun () -> 
-            Thread.Sleep(1000)
+            Thread.Sleep(10000)
             sprintf "[%A] Error result at %A" input (DateTime.Now) :> obj
     let asyncFunc = new ExcelFunc(asyncFuncImpl)
     ExcelAsyncUtil.Run(functionName, args, asyncFunc)
@@ -57,10 +57,22 @@ let RunClock (input: obj) (fail: bool) =
     // we also check whether the error fallback has returned a result 
     // (typically it will in the next call) and then remove the call info from the error tracking set, to reset everything
     let callErrorFallback = fun () ->
-        // Error handling mode
+
+        // Error handling mode - call the async fallback function
         let errorFallbackResult = XlCall.Excel(XlCall.xlUDF, "AsyncErrorFallback", input)
-        if not (errorFallbackResult.Equals(ExcelError.ExcelErrorNA)) then
-            _errorCalls.Remove(callInfo) |> ignore
+        // NOTE: This check is now inverted from the earlier implementation, 
+        //       because we want to keep the error handling mode active until the error fallback returns a non-#N/A result
+        if (errorFallbackResult.Equals(ExcelError.ExcelErrorNA)) then
+            // We assume this is the first call to the error fallback
+            // Keep track of error handling call info for dispose by calling an err-specific observable while we are in error handling mode
+            // When we skip this extra Observe call because the error fallback is complete (with a non-#N/A result)
+            // (or the function call is removed from the worksheet), the call info will be removed from the error calls set
+            ExcelAsyncUtil.Observe("ERROR_FALLBACK_" + functionName, args, fun () -> 
+                { new IExcelObservable with
+                    member this.Subscribe(observer: IExcelObserver) =
+                        { new IDisposable with 
+                            member this.Dispose() = 
+                                _errorCalls.Remove(callInfo) |> ignore } } ) |> ignore
         errorFallbackResult
 
     // Our function check whether we are in error handling mode or not
